@@ -1,0 +1,133 @@
+syntax = "proto3";
+package network;
+option go_package = "github.com/p2p-poker/internal/network";
+
+// MsgType identifies the poker protocol message type.
+enum MsgType {
+  UNKNOWN          = 0;
+  JOIN_TABLE       = 1;
+  PLAYER_READY     = 2;
+  SHUFFLE_STEP     = 3;
+  SHUFFLE_COMMIT   = 4;
+  PARTIAL_DECRYPT  = 5;
+  PLAYER_ACTION    = 6;
+  GAME_STATE_SYNC  = 7;
+  HEARTBEAT        = 8;
+  TIMEOUT_VOTE     = 9;
+  HAND_RESULT      = 10;
+  LEAVE_TABLE      = 11;
+}
+
+// Envelope wraps every message sent over the wire.
+// Every envelope is signed by the sender's libp2p private key
+// (handled by the host layer — see host.go).
+message Envelope {
+  MsgType   type       = 1;
+  string    sender_id  = 2; // libp2p PeerID (base58)
+  int64     seq        = 3; // monotonically increasing per sender
+  int64     timestamp  = 4; // unix millis
+  bytes     payload    = 5; // serialised inner message
+  bytes     signature  = 6; // Ed25519 sig over (type|sender_id|seq|timestamp|payload)
+}
+
+// JoinTable is sent by a player wanting to sit at a table.
+message JoinTable {
+  string table_id      = 1;
+  string player_name   = 2;
+  int64  buy_in        = 3;   // chips
+  bytes  sra_pub_key_e = 4;   // SRA encryption exponent E (big-endian)
+  bytes  session_nonce = 5;   // player's contribution to session nonce
+}
+
+// PlayerReady signals the player is ready to start the hand.
+message PlayerReady {
+  string table_id = 1;
+  int64  hand_num = 2;
+}
+
+// ShuffleStep carries one player's encrypted+permuted deck.
+message ShuffleStep {
+  string table_id        = 1;
+  int64  hand_num        = 2;
+  string player_id       = 3;
+  repeated bytes deck    = 4; // 52 big-endian encoded big.Ints
+  bytes  commitment_hash = 5; // sha256(deck || nonce) — broadcast first
+  bytes  commitment_nonce = 6; // revealed after all steps are in
+}
+
+// ShuffleCommit is broadcast BEFORE the deck is revealed (commit phase).
+message ShuffleCommit {
+  string table_id        = 1;
+  int64  hand_num        = 2;
+  string player_id       = 3;
+  bytes  commitment_hash = 4;
+}
+
+// ZKProofWire is the wire encoding of a Chaum-Pedersen ZK proof.
+message ZKProofWire {
+  bytes a = 1; // big-endian big.Int
+  bytes b = 2;
+  bytes s = 3;
+  bytes h = 4;
+}
+
+// PartialDecrypt carries one player's partial decryption of one card slot.
+message PartialDecrypt {
+  string     table_id   = 1;
+  int64      hand_num   = 2;
+  string     player_id  = 3;
+  int32      card_index = 4;
+  bytes      ciphertext = 5; // input value (big-endian)
+  bytes      result     = 6; // ciphertext^d mod P (big-endian)
+  ZKProofWire proof     = 7;
+}
+
+// PlayerAction carries a betting action.
+message PlayerAction {
+  string table_id  = 1;
+  int64  hand_num  = 2;
+  string player_id = 3;
+  int32  action    = 4; // maps to game.ActionType
+  int64  amount    = 5;
+  int64  seq       = 6; // action sequence number in this hand
+}
+
+// GameStateSync is a full state snapshot — sent on reconnect or dispute.
+message GameStateSync {
+  string table_id     = 1;
+  int64  hand_num     = 2;
+  int32  phase        = 3;
+  int64  pot          = 4;
+  int64  current_bet  = 5;
+  string acting_player = 6;
+  bytes  state_root   = 7; // sha256 of canonical serialised game state
+  repeated bytes action_log = 8; // all signed envelopes in order
+}
+
+// Heartbeat is sent every 5 seconds to signal liveness.
+message Heartbeat {
+  string table_id = 1;
+  int64  hand_num = 2;
+  int64  seq      = 3;
+}
+
+// TimeoutVote is broadcast when a player times out.
+message TimeoutVote {
+  string table_id         = 1;
+  int64  hand_num         = 2;
+  string voting_player_id = 3;
+  string timedout_player_id = 4;
+}
+
+// HandResult is broadcast at showdown so all peers can verify payouts.
+message HandResult {
+  string table_id = 1;
+  int64  hand_num = 2;
+  repeated PotResult pots = 3;
+  bytes  state_root = 4;
+}
+
+message PotResult {
+  int64  amount              = 1;
+  repeated string winner_ids = 2;
+}
